@@ -121,6 +121,10 @@ B7. [CT] Verification inside container — ALL CONFIRMED WORKING 2026-09-09:
     ffmpeg NVENC encode test still to run when transcoding work starts.
 
 B8. [HOST + CT] Full reboot test (host + CT) to confirm persistence across reboots.
+    After reboot, verify persistence:
+    [HOST] bash pve2-host-nvidia-setup.sh 3        # all four host checks
+    [HOST] bash gpu-diagnose.sh all                # full host+CT sweep, log to /tmp
+    PASS = CT checks C1–C7 all show expected values; log preserved for comparison.
 
 ==========================================================
 DO NOT RUN — already tried, known to fail on this setup
@@ -182,6 +186,13 @@ re-run them; the reason they fail is listed so future-you doesn't retry.
 ==========================================================
 TROUBLESHOOTING — check in this order
 ==========================================================
+
+STEP 0 — before anything else, run the diagnostics and keep the log:
+    bash gpu-diagnose.sh all          # on pve2 host (as root)
+    One run collects every check below on both host and CT, writes a
+    timestamped log to /tmp/gpu-diagnose-*.log, and labels each check
+    with the expected value and the T-entry that covers it if wrong.
+    When reporting a problem, attach that log — no manual probing needed.
 
 T1. nvidia-smi works on host but NOT in CT ("couldn't communicate"):
     a. [CT + HOST] Driver version mismatch — `nvidia-smi | head -1` on BOTH
