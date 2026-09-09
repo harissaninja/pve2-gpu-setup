@@ -26,6 +26,62 @@ INSIDE THE CT (hermesagent, pct enter 100 or SSH):
 Rule of thumb: kernel + devices + config = HOST; libraries + apps = CT.
 
 ==========================================================
+PART 0 — FRESH HOST REBUILD (after formatting / new Proxmox install)
+==========================================================
+ORDER MATTERS. Do these in sequence; each step assumes the previous
+one finished. Do NOT create the CT before the host driver works.
+
+P0.1  Install Proxmox VE (latest stable). In UEFI: confirm Secure Boot
+      is DISABLED before first boot (DKMS module is self-signed via MOK;
+      a Secure-Boot-enabled install will refuse to load it).
+
+P0.2  Run the community-scripts Proxmox VE post-install script:
+      bash -c "$(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/tools/pve/post-pve-install.sh)"
+      Choose: correct sources → yes; disable enterprise repos → yes;
+      enable no-subscription → yes; disable HA/corosync → yes (single node);
+      update Proxmox VE → YES.
+      *** This runs apt dist-upgrade and may change the PVE kernel. ***
+      Reboot when it offers. After reboot note the kernel:
+      uname -r
+      If it is NOT 7.0.14-16-pve, remember it — every hardcoded kernel
+      check in this runbook and in pve2-host-nvidia-setup.sh refers to
+      the kernel that is RUNNING when you build the driver.
+
+P0.3  Fetch this repo onto the fresh host:
+      apt install -y git
+      git clone https://github.com/harissaninja/pve2-gpu-setup /root/pve2-gpu-setup
+      cd /root/pve2-gpu-setup
+
+P0.4  GPU HOST SETUP FIRST — Part A below (A0 → A1 → reboot → A2 → A3).
+      Why before the CT:
+      - The CT config mounts /dev/nvidia* into the CT. If the host
+        driver isn't loaded, lxc.mount.entry ... create=file creates
+        EMPTY PLACEHOLDER FILES inside the CT that later BLOCK the real
+        device bind-mounts. Host driver first = clean first boot.
+      - DKMS builds against the running kernel; do it once, after the
+        post-install update, not before.
+
+P0.5  CREATE / RESTORE THE CT. Two paths:
+      a. Fresh CT via community-scripts (Debian 13 template), then
+         rename/keep VMID 100 (this runbook's CT is VMID 100
+         "hermesagent"; a different VMID means editing the pct
+         commands and /etc/pve/lxc/<ID>.conf paths throughout Part B).
+      b. Restore from vzdump backup of the old CT:
+         pct restore 100 /mnt/pve/<storage>/dump/vzdump-lxc-100-*.tar.zst
+         (or via the web UI: Storage → backups → Restore; untick
+         "Unprivileged" only if the backup was privileged).
+      Confirm CT exists: pct list
+
+P0.6  CT GPU STEPS — Part B below (B1 → B8). Then gpu-diagnose.sh all.
+
+P0.7  Remaining from-scratch TODOs not covered by this repo:
+      - network/VLAN config, storage mounts, DNS
+      - user accounts inside the CT (hermes user, sudo)
+      - restoring services (Hermes itself, Docker, etc.)
+
+The rest of this runbook assumes P0 is done and the CT exists.
+
+==========================================================
 PART A — HOST pve2 (run as root, in order)
 ==========================================================
 

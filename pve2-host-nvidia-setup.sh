@@ -93,20 +93,15 @@ EOF
     echo "patch already applied, skipping"
   fi
 
-  echo "== PATCH REQUIRED =="
+  echo "== PATCH REQUIRED ==" # (informational only — the vmflags patch above was already auto-applied if present)
   cat <<'NOTE'
-Kernel 7.0 breaks the 580 build. Before running the installer you must
-apply the community patches:
-  https://github.com/harissaninja/pve2-gpu-setup — nvidia-7.0-vmflags-580.159.03.patch
-  - VMA API change   (nv-mm.h / nv-mmap.c)
-  - dma-fence helper (nvidia-dma-fence-helper.h)
-  - __vm_flags removal (kernel >= 7.0.2 — we are on 7.0.14: REQUIRED)
-  - strlcpy removal  (affects 580.x)
-Download the .patch files, copy them into this directory, and register
-them in dkms.conf via PATCH[]/PATCH_MATCH[] entries, then continue.
+Kernel 7.0 breaks the 580 build. nvidia-7.0-vmflags-580.159.03.patch
+(from this repo) is the only required patch and was auto-applied above
+if present. The other community patches (strlcpy, dma-fence, VMA) are
+OBSOLETE for 580.159.03 — do not add them. See runbook DO-NOT-RUN #9.
 NOTE
-  read -rp "Patches applied? [y/N] " ok
-  [ "$ok" = "y" ] || { echo "Aborting — apply patches first."; exit 1; }
+  read -rp "Continue with DKMS install? [y/N] " ok
+  [ "$ok" = "y" ] || { echo "Aborting."; exit 1; }
 
   echo "== running installer (DKMS, headless) =="
   ./nvidia-installer --dkms -s \
@@ -131,13 +126,13 @@ EOF
   dkms status
   echo "== nvidia-smi =="
   nvidia-smi
-  echo "== device nodes (note major numbers: normally 195 and 511) =="
+  echo "== device nodes (note the nvidia-uvm major: 510 on this host, feeds CT cgroup rule) =="
   ls -l /dev/nvidia* 2>/dev/null || echo "no /dev/nvidia* — try: nvidia-modprobe -u -c 0; nvidia-smi"
   echo "== module loaded =="
   lsmod | grep nvidia
   echo
   echo "If all four passed: HOST SIDE COMPLETE."
-  echo "Next: run the LXC config steps (see lxc-guest-steps.md), then reboot the CT."
+  echo "Next: create/restore the CT (runbook PART 0 P0.5), then Part B (LXC config)."
   ;;
 
 help|*)
