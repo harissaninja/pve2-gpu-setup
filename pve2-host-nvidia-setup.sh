@@ -72,16 +72,32 @@ EOF
     chmod +x "$RUNFILE"
   fi
 
-  echo "== extracting =="
-  rm -rf "NVIDIA-Linux-x86_64-${DRIVERVER}-tmp"
-  bash "$RUNFILE" -x --target "NVIDIA-Linux-x86_64-${DRIVERVER}-tmp"
+  if [ -f "NVIDIA-Linux-x86_64-${DRIVERVER}-tmp/kernel/nvidia-installer" ] || \
+     [ -d "NVIDIA-Linux-x86_64-${DRIVERVER}-tmp/kernel" ]; then
+    echo "== existing extracted tree found, keeping it (preserves applied patches) =="
+  else
+    echo "== extracting =="
+    bash "$RUNFILE" -x --target "NVIDIA-Linux-x86_64-${DRIVERVER}-tmp"
+  fi
   cd "NVIDIA-Linux-x86_64-${DRIVERVER}-tmp"
+
+  echo "== applying vmflags patch if not already applied =="
+  if ! grep -q 'vm_flags_reset' kernel/common/inc/nv-mm.h; then
+    if [ -f nvidia-7.0-vmflags-580.159.03.patch ]; then
+      patch -d kernel -p1 < nvidia-7.0-vmflags-580.159.03.patch
+    else
+      echo "WARNING: patch file missing and vm_flags_reset absent — build will likely fail"
+      read -rp "Continue anyway? [y/N] " pc; [ "$pc" = "y" ] || exit 1
+    fi
+  else
+    echo "patch already applied, skipping"
+  fi
 
   echo "== PATCH REQUIRED =="
   cat <<'NOTE'
 Kernel 7.0 breaks the 580 build. Before running the installer you must
 apply the community patches:
-  https://gist.github.com/louzt/1c85044d5090d19223c3f5edf426a19c
+  https://github.com/harissaninja/pve2-gpu-setup — nvidia-7.0-vmflags-580.159.03.patch
   - VMA API change   (nv-mm.h / nv-mmap.c)
   - dma-fence helper (nvidia-dma-fence-helper.h)
   - __vm_flags removal (kernel >= 7.0.2 — we are on 7.0.14: REQUIRED)
