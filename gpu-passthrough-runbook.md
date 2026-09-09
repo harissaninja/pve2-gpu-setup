@@ -49,8 +49,9 @@ A3. Host verification
       3. /dev/nvidia0, /dev/nvidiactl, /dev/nvidia-uvm exist
       4. lsmod shows nvidia (+nvidia_uvm after first use)
     If /dev/nvidia* missing: nvidia-modprobe -u -c 0 && nvidia-smi, re-check.
-    NOTE the major numbers (normally 195 for nvidia*, 511 for nvidia-uvm):
-    they feed the cgroup rules in B1.
+    NOTE the major numbers (normally 195 for nvidia*): they feed the
+    cgroup rules in B1. CONFIRMED ON THIS HOST: nvidia-uvm major is 510,
+    not 511 (check with: ls -l /dev/nvidia-uvm).
 
 ==========================================================
 PART B — LXC hermesagent (VMID 100) — ONLY AFTER PART A PASSES
@@ -59,9 +60,9 @@ PART B — LXC hermesagent (VMID 100) — ONLY AFTER PART A PASSES
 B1. Stop the container:
     pct stop 100
 
-B2. Add to /etc/pve/lxc/100.conf  (use the major numbers from A3):
+B2. Add to /etc/pve/lxc/100.conf  (use the major numbers from A3; uvm = 510 here):
     lxc.cgroup2.devices.allow: c 195:* rwm
-    lxc.cgroup2.devices.allow: c 511:* rwm
+    lxc.cgroup2.devices.allow: c 510:* rwm
     lxc.mount.entry: /dev/nvidia0 dev/nvidia0 none bind,optional,create=file
     lxc.mount.entry: /dev/nvidiactl dev/nvidiactl none bind,optional,create=file
     lxc.mount.entry: /dev/nvidia-uvm dev/nvidia-uvm none bind,optional,create=file
@@ -70,9 +71,12 @@ B2. Add to /etc/pve/lxc/100.conf  (use the major numbers from A3):
 B3. Start container:
     pct start 100
 
-B4. Inside the container — install MATCHING userspace (580.159.03, no kernel module):
-    EITHER:  bash NVIDIA-Linux-x86_64-580.159.03.run --no-kernel-module -s
-    OR:      copy host libs manually (libcuda, libnvidia-ml, nvidia-smi)
+B4. Inside the container — install MATCHING userspace (580.159.03, no kernel module).
+    Deliver the .run into the CT from the host (host /root is not visible in the CT):
+    pct push 100 /root/NVIDIA-Linux-x86_64-580.159.03.run /tmp/nvidia.run --perms 644
+    Then inside the CT:
+    sudo bash /tmp/nvidia.run --no-kernel-module -s
+    Installer warnings about X paths / glvnd EGL config are harmless headless.
     Version must EXACTLY match host (check: nvidia-smi | head -1 in both).
 
 B5. Environment for CUDA + NVENC (in shell profile, systemd units, or Docker env):
@@ -84,10 +88,14 @@ B6. Docker inside the CT (only if you use Docker):
     if "BPF_CGROUP_DEVICE: operation not permitted":
       set no-cgroups = true in /etc/nvidia-container-runtime/config.toml
 
-B7. Verification inside container:
-    nvidia-smi                      # driver 580.159.03, GTX 950M
-    ffmpeg -hwaccel cuda -i test.mp4 -c:v h264_nvenc out.mp4   # NVENC (H.264 only)
-    python: llama.cpp / CUDA smoke test                        # CUDA (sm_50)
+B7. Verification inside container — ALL CONFIRMED WORKING 2026-09-09:
+    nvidia-smi                      # driver 580.159.03, GTX 950M, 4096 MiB ✓
+    ctypes libcuda smoke test: cuInit/cuCtxCreate/cuMemAlloc OK, 4004/4037 MiB free ✓
+    ctypes libnvidia-encode smoke test: NvEncodeAPICreateInstance() = 0 ✓
+    torch (cu121 wheel): torch.cuda.is_available() = True, GTX 950M ✓
+      (install: apt install python3-pip; pip3 install --index-url
+       https://download.pytorch.org/whl/cu121 torch; ~2.5 GB)
+    ffmpeg NVENC encode test still to run when transcoding work starts.
 
 B8. Full reboot test (host + CT) to confirm persistence across reboots.
 
