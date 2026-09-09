@@ -54,9 +54,12 @@ EOF
 2)
   # Phase 2 — download driver + apply kernel 7.0 patches + DKMS install
   # Must run AFTER reboot (nouveau/nova must not hold the card).
-  echo "== confirming no nouveau/nova binding =="
-  if lspci -nnk -s 01:00.0 | grep -qiE 'nouveau|nova'; then
-    echo "ERROR: nouveau/nova still bound. Reboot again or check blacklist."; exit 1
+  echo "== confirming no nouveau/nova loaded =="
+  if lsmod | grep -qiE '^(nouveau|nova) '; then
+    echo "ERROR: nouveau/nova still loaded. Reboot again or check blacklist."; exit 1
+  fi
+  if lspci -nnk -s 01:00.0 | grep -i 'kernel driver in use' | grep -qiE 'nouveau|nova'; then
+    echo "ERROR: nouveau/nova still bound to GPU. Reboot again or check blacklist."; exit 1
   fi
 
   DRIVERVER="${DRIVERVER:-580.159.03}"
