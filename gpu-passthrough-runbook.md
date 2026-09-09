@@ -100,6 +100,119 @@ B7. Verification inside container — ALL CONFIRMED WORKING 2026-09-09:
 B8. Full reboot test (host + CT) to confirm persistence across reboots.
 
 ==========================================================
+DO NOT RUN — already tried, known to fail on this setup
+==========================================================
+Each of these was attempted during this project and diagnosed. Do not
+re-run them; the reason they fail is listed so future-you doesn't retry.
+
+1. apt install nvidia-driver nvidia-smi        (Debian 550.163.01 stack)
+   FAILS: nvidia-kernel-dkms 550.163.01 cannot build against
+   7.0.14-16-pve — make.log shows `struct vm_area_struct has no member
+   named __vm_flags`, implicit `in_irq`, and missing
+   `dma_map_ops.map_resource`. All removed/renamed after 550 was
+   written. No headers fix helps. Also drags ~540 MB of X11/GTK onto
+   the hypervisor. This stack was purged in Phase A1.
+
+2. Driver branch 595/610 (researched suggestion)
+   WRONG for this card: 580 is the LAST branch supporting Maxwell
+   (GTX 950M). 595+ dropped Maxwell entirely. Don't chase newer branches.
+
+3. nvidia-open kernel modules
+   NOT AN OPTION: open modules don't support Maxwell (sm_50) at all.
+   The proprietary 580 with kernel-7.0 patches is the only path.
+
+4. VFIO/PCI passthrough (IOMMU + GRUB + vfio-pci + blacklist nvidia
+   recipe from YouTube-style guides)
+   WRONG ARCHITECTURE: that's for passing a GPU into a VM. It binds the
+   card to vfio-pci, which removes /dev/nvidia* from the host — fatal
+   for LXC sharing, which works by mounting the HOST's /dev/nvidia*
+   into the CT. Also pointless here: hermesagent is an LXC, and LXC
+   cannot do VFIO. Never blacklist `nvidia` on this host.
+
+5. lxc.hook.mount / nvidia-container-cli hook in 100.conf
+   BROKEN on PVE 9: use the manual cgroup2 allow + mount.entry lines
+   in B2 (verified working).
+
+6. c 511:* rwm for nvidia-uvm (the "normal" major from generic guides)
+   FAILS on this host: nvidia-uvm got major 510 here. Rule for 511
+   allows nothing — device access dies inside the CT with no visible
+   error other than failed CUDA init. Always read the major from
+   `ls -l /dev/nvidia-uvm` on the host after a fresh driver load.
+
+7. bash /root/NVIDIA-Linux-x86_64-580.159.03-tmp/....run  (inside CT)
+   FAILS twice over: host /root is not visible in the CT, and the -tmp
+   dir contains only the extracted tree, not the .run. Deliver via
+   `pct push` from the actual path (see B4).
+
+8. pip3 install ...  (as non-root in the CT without python3-pip)
+   FAILS: trixie base image has no pip module and agent users have no
+   passwordless sudo. As root: `apt install python3-pip` first, then
+   `pip3 install --index-url https://download.pytorch.org/whl/cu121 torch`.
+
+9. Kernel-7.0 patch set as published in the louzt gist (all 4 patches)
+   PARTIALLY OBSOLETE for 580.159.03: only the __vm_flags patch is
+   needed. strlcpy and dma-fence fixes are already resolved in this
+   driver rev (verified by grep), and the VMA API fix is not triggered.
+   Applying extras is harmless but unnecessary; the repo's
+   nvidia-7.0-vmflags-580.159.03.patch is the minimal verified set.
+
+==========================================================
+TROUBLESHOOTING — check in this order
+==========================================================
+
+T1. nvidia-smi works on host but NOT in CT ("couldn't communicate"):
+    a. Driver version mismatch — `nvidia-smi | head -1` on BOTH host
+       and CT. Userspace in CT must EXACTLY match the host kernel
+       module version (580.159.03). Reinstall with --no-kernel-module.
+    b. Wrong/missing cgroup rule — on the host:
+       `ls -l /dev/nvidia-uvm`  → confirm major (here: 510)
+       `cat /etc/pve/lxc/100.conf | grep cgroup2` → majors 195 and 510
+       Rules only apply on CT start: `pct stop 100 && pct start 100`.
+    c. Device nodes missing inside CT — check the four lxc.mount.entry
+       lines are present; then `ls /dev/nvidia*` inside the CT.
+
+T2. CUDA apps fail in CT but nvidia-smi works:
+    - libcuda.so.1 missing in CT → userspace not installed, or wrong
+      version. `ldconfig -p | grep libcuda` inside CT.
+    - /dev/nvidia-uvm exists but stale (created before host driver
+      loaded) → on host: `rm /dev/nvidia-uvm && nvidia-modprobe -u -c 0`
+      then restart the CT.
+
+T3. DKMS rebuild fails after a PVE kernel upgrade:
+    - `apt install pve-headers` (meta-package tracks the new kernel)
+    - If kernel > 7.0.14: the __vmflags patch may need rework — check
+      nv-mm.h / nv.c errors in /var/lib/dkms/nvidia/*/build/make.log.
+    - Fallback: boot the previous PVE kernel from the boot menu.
+
+T4. After reboot, card idle at 100% memory clock / persistenced dead:
+    - `systemctl status nvidia-persistenced`
+    - `cat /etc/modules-load.d/nvidia.conf` must list nvidia, nvidia-uvm,
+      nvidia-modeset. If /dev/nvidia-uvm is missing after boot:
+      `nvidia-modprobe -u -c 0` (then T2 note above).
+
+T5. Nouveau/nova re-grabbed the card (after kernel or firmware update):
+    - `lspci -nnk -s 01:00.0 | grep "Kernel driver"` → must say nvidia
+    - If nouveau: `cat /etc/modprobe.d/blacklist-nvidia-nouveau.conf`
+      must contain blacklist nouveau, blacklist nova, modeset=0;
+      then `update-initramfs -u -k all` and reboot.
+
+T6. Torch/PyTorch "CUDA not available" in CT:
+    - `python3 -c "import torch; print(torch.version.cuda,
+      torch.cuda.is_available())"` — if False but B5 ctypes test passes,
+      the wheel's bundled runtime needs a matching driver at least as
+      new; driver 580.159.03 (CUDA 13.0) covers cu121/cu124 wheels.
+    - sm_50 warning "GPU with CUDA capability 5.0 is not compatible"
+      → expected on newest torch; use cu121 wheels or llama.cpp.
+
+T7. Docker in CT can't see GPU:
+    - install nvidia-container-toolkit; if "BPF_CGROUP_DEVICE:
+      operation not permitted", set `no-cgroups = true` in
+      /etc/nvidia-container-runtime/config.toml (unprivileged CT).
+    - env NVIDIA_VISIBLE_DEVICES + NVIDIA_DRIVER_CAPABILITIES must be
+      set for the container runtime (they're in /etc/environment, but
+      Docker needs them per-container or via nvidia runtime defaults).
+
+==========================================================
 Known constraints (GTX 950M / Maxwell)
 ==========================================================
 - Driver locked to 580 branch forever (last Maxwell branch); CUDA 12.x max.
