@@ -5,6 +5,27 @@ Two artifacts:
 - this file                  → full ordered checklist with the LXC part
 
 ==========================================================
+WHERE THINGS RUN — quick reference
+==========================================================
+
+ON THE HOST (pve2, SSH as root):
+  - fetch + run pve2-host-nvidia-setup.sh (phases pre / 1 / 2 / 3)
+  - edit /etc/pve/lxc/100.conf        (cgroup + mount entries)
+  - pct stop 100 / pct start 100      (config only applies on restart)
+  - pct push 100 <host-file> <ct-path>  (copy files INTO the CT)
+  - anything touching /dev/nvidia*, dkms, modprobe, initramfs, GRUB
+  - pve-headers, driver kernel modules, nvidia-persistenced
+
+INSIDE THE CT (hermesagent, pct enter 100 or SSH):
+  - install the driver USERSPACE ONLY: .run --no-kernel-module
+  - pip/python/torch, ffmpeg, llama.cpp, application workloads
+  - nvidia-container-toolkit + Docker config (if using Docker)
+  - env vars for containers: NVIDIA_VISIBLE_DEVICES / _CAPABILITIES
+  - NEVER run DKMS / modprobe / kernel-module builds inside the CT
+
+Rule of thumb: kernel + devices + config = HOST; libraries + apps = CT.
+
+==========================================================
 PART A — HOST pve2 (run as root, in order)
 ==========================================================
 
@@ -52,15 +73,16 @@ A3. Host verification
     NOTE the major numbers (normally 195 for nvidia*): they feed the
     cgroup rules in B1. CONFIRMED ON THIS HOST: nvidia-uvm major is 510,
     not 511 (check with: ls -l /dev/nvidia-uvm).
+    >>> PART A IS 100% HOST — nothing here runs inside the CT. <<<
 
 ==========================================================
 PART B — LXC hermesagent (VMID 100) — ONLY AFTER PART A PASSES
 ==========================================================
 
-B1. Stop the container:
+B1. [HOST] Stop the container:
     pct stop 100
 
-B2. Add to /etc/pve/lxc/100.conf  (use the major numbers from A3; uvm = 510 here):
+B2. [HOST] Add to /etc/pve/lxc/100.conf  (use the major numbers from A3; uvm = 510 here):
     lxc.cgroup2.devices.allow: c 195:* rwm
     lxc.cgroup2.devices.allow: c 510:* rwm
     lxc.mount.entry: /dev/nvidia0 dev/nvidia0 none bind,optional,create=file
@@ -68,36 +90,37 @@ B2. Add to /etc/pve/lxc/100.conf  (use the major numbers from A3; uvm = 510 here
     lxc.mount.entry: /dev/nvidia-uvm dev/nvidia-uvm none bind,optional,create=file
     lxc.mount.entry: /dev/nvidia-uvm-tools dev/nvidia-uvm-tools none bind,optional,create=file
 
-B3. Start container:
+B3. [HOST] Start container (config applies only on start):
     pct start 100
 
-B4. Inside the container — install MATCHING userspace (580.159.03, no kernel module).
-    Deliver the .run into the CT from the host (host /root is not visible in the CT):
+B4. Install MATCHING userspace in the CT (580.159.03, no kernel module).
+    Step 1 [HOST] — deliver the .run into the CT (host /root is not visible in the CT):
     pct push 100 /root/NVIDIA-Linux-x86_64-580.159.03.run /tmp/nvidia.run --perms 644
-    Then inside the CT:
+    Step 2 [CT] — enter the container, then install userspace only:
+    pct enter 100
     sudo bash /tmp/nvidia.run --no-kernel-module -s
     Installer warnings about X paths / glvnd EGL config are harmless headless.
     Version must EXACTLY match host (check: nvidia-smi | head -1 in both).
 
-B5. Environment for CUDA + NVENC (in shell profile, systemd units, or Docker env):
+B5. [CT] Environment for CUDA + NVENC (in shell profile, systemd units, or Docker env):
     NVIDIA_VISIBLE_DEVICES=all
     NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
 
-B6. Docker inside the CT (only if you use Docker):
+B6. [CT] Docker inside the CT (only if you use Docker):
     install nvidia-container-toolkit per NVIDIA docs
     if "BPF_CGROUP_DEVICE: operation not permitted":
       set no-cgroups = true in /etc/nvidia-container-runtime/config.toml
 
-B7. Verification inside container — ALL CONFIRMED WORKING 2026-09-09:
+B7. [CT] Verification inside container — ALL CONFIRMED WORKING 2026-09-09:
     nvidia-smi                      # driver 580.159.03, GTX 950M, 4096 MiB ✓
     ctypes libcuda smoke test: cuInit/cuCtxCreate/cuMemAlloc OK, 4004/4037 MiB free ✓
     ctypes libnvidia-encode smoke test: NvEncodeAPICreateInstance() = 0 ✓
     torch (cu121 wheel): torch.cuda.is_available() = True, GTX 950M ✓
-      (install: apt install python3-pip; pip3 install --index-url
+      (install as root in the CT: apt install python3-pip; pip3 install --index-url
        https://download.pytorch.org/whl/cu121 torch; ~2.5 GB)
     ffmpeg NVENC encode test still to run when transcoding work starts.
 
-B8. Full reboot test (host + CT) to confirm persistence across reboots.
+B8. [HOST + CT] Full reboot test (host + CT) to confirm persistence across reboots.
 
 ==========================================================
 DO NOT RUN — already tried, known to fail on this setup
@@ -161,42 +184,42 @@ TROUBLESHOOTING — check in this order
 ==========================================================
 
 T1. nvidia-smi works on host but NOT in CT ("couldn't communicate"):
-    a. Driver version mismatch — `nvidia-smi | head -1` on BOTH host
-       and CT. Userspace in CT must EXACTLY match the host kernel
-       module version (580.159.03). Reinstall with --no-kernel-module.
-    b. Wrong/missing cgroup rule — on the host:
+    a. [CT + HOST] Driver version mismatch — `nvidia-smi | head -1` on BOTH
+       host and CT. Userspace in CT must EXACTLY match the host kernel
+       module version (580.159.03). Reinstall in CT with --no-kernel-module.
+    b. [HOST] Wrong/missing cgroup rule:
        `ls -l /dev/nvidia-uvm`  → confirm major (here: 510)
        `cat /etc/pve/lxc/100.conf | grep cgroup2` → majors 195 and 510
        Rules only apply on CT start: `pct stop 100 && pct start 100`.
-    c. Device nodes missing inside CT — check the four lxc.mount.entry
-       lines are present; then `ls /dev/nvidia*` inside the CT.
+    c. [CT] Device nodes missing — check the four lxc.mount.entry
+       lines are present (host-side config); then `ls /dev/nvidia*` inside the CT.
 
 T2. CUDA apps fail in CT but nvidia-smi works:
-    - libcuda.so.1 missing in CT → userspace not installed, or wrong
+    - [CT] libcuda.so.1 missing → userspace not installed, or wrong
       version. `ldconfig -p | grep libcuda` inside CT.
-    - /dev/nvidia-uvm exists but stale (created before host driver
-      loaded) → on host: `rm /dev/nvidia-uvm && nvidia-modprobe -u -c 0`
-      then restart the CT.
+    - [HOST] /dev/nvidia-uvm exists but stale (created before host driver
+      loaded) → `rm /dev/nvidia-uvm && nvidia-modprobe -u -c 0`
+      then restart the CT (HOST: pct stop/start 100).
 
-T3. DKMS rebuild fails after a PVE kernel upgrade:
+T3. DKMS rebuild fails after a PVE kernel upgrade:   [HOST]
     - `apt install pve-headers` (meta-package tracks the new kernel)
     - If kernel > 7.0.14: the __vmflags patch may need rework — check
       nv-mm.h / nv.c errors in /var/lib/dkms/nvidia/*/build/make.log.
     - Fallback: boot the previous PVE kernel from the boot menu.
 
-T4. After reboot, card idle at 100% memory clock / persistenced dead:
+T4. After reboot, card idle at 100% memory clock / persistenced dead:   [HOST]
     - `systemctl status nvidia-persistenced`
     - `cat /etc/modules-load.d/nvidia.conf` must list nvidia, nvidia-uvm,
       nvidia-modeset. If /dev/nvidia-uvm is missing after boot:
       `nvidia-modprobe -u -c 0` (then T2 note above).
 
-T5. Nouveau/nova re-grabbed the card (after kernel or firmware update):
+T5. Nouveau/nova re-grabbed the card (after kernel or firmware update):   [HOST]
     - `lspci -nnk -s 01:00.0 | grep "Kernel driver"` → must say nvidia
     - If nouveau: `cat /etc/modprobe.d/blacklist-nvidia-nouveau.conf`
       must contain blacklist nouveau, blacklist nova, modeset=0;
       then `update-initramfs -u -k all` and reboot.
 
-T6. Torch/PyTorch "CUDA not available" in CT:
+T6. Torch/PyTorch "CUDA not available" in CT:   [CT]
     - `python3 -c "import torch; print(torch.version.cuda,
       torch.cuda.is_available())"` — if False but B5 ctypes test passes,
       the wheel's bundled runtime needs a matching driver at least as
@@ -204,7 +227,7 @@ T6. Torch/PyTorch "CUDA not available" in CT:
     - sm_50 warning "GPU with CUDA capability 5.0 is not compatible"
       → expected on newest torch; use cu121 wheels or llama.cpp.
 
-T7. Docker in CT can't see GPU:
+T7. Docker in CT can't see GPU:   [CT]
     - install nvidia-container-toolkit; if "BPF_CGROUP_DEVICE:
       operation not permitted", set `no-cgroups = true` in
       /etc/nvidia-container-runtime/config.toml (unprivileged CT).
