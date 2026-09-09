@@ -47,6 +47,64 @@ P0.2  Run the community-scripts Proxmox VE post-install script:
       check in this runbook and in pve2-host-nvidia-setup.sh refers to
       the kernel that is RUNNING when you build the driver.
 
+      --------------------------------------------------------------
+      DIST-UPGRADE CHECKPOINT (read before Part A)
+      --------------------------------------------------------------
+      A PVE kernel bump is unlikely (PVE pins its kernel and the
+      post-install script mostly applies security updates), but if it
+      happens, adjust the steps below BEFORE running Part A. A kernel
+      bump does NOT invalidate the plan — it only touches the parts
+      that reference kernel internals.
+
+      Check what changed:
+        uname -r                                  # new running kernel
+        apt list --installed 2>/dev/null | grep -E 'pve-kernel|proxmox-kernel'
+      Also check whether the NVIDIA driver version you're about to
+      install is still the newest 580.x (a rebuild is a good moment to
+      update): https://download.nvidia.com/XFree86/Linux-x86_64/
+      (580.x is the LAST branch for Maxwell — never go above 580.)
+
+      Code adjustments required if the kernel changed:
+
+      ADJ-1. A0 "expect 7.0.14-16-pve" — read as "expect the kernel
+             you just recorded". The script's `pre` phase prints
+             uname -r; just verify it matches what you recorded.
+
+      ADJ-2. A2 vmflags patch — REQUIRED only on kernels >= 7.0.2
+             (which includes any future 7.0.x/7.1+). If the new kernel
+             is 7.1+ or later, the patch may fail to apply cleanly:
+               cd /root/pve2-gpu-setup
+               # test without committing:
+               patch -d NVIDIA-Linux-x86_64-580.*/kernel --dry-run -p1 \
+                 < nvidia-7.0-vmflags-580.159.03.patch
+             If the dry-run fails, check whether __vm_flags handling
+             changed (grep for vm_flags_reset in the kernel's
+             include/linux/mm.h); a dry-run success means no action
+             needed. Diagnostics if the BUILD then fails: runbook T3.
+
+      ADJ-3. A1 nova blacklist line — `blacklist nova` is only needed
+             on kernels that ship the Rust nova driver (7.0+). Harmless
+             if absent in future kernels; leave it.
+
+      ADJ-4. A3 / B2 device majors — nvidia0/nvidiactl major (195) and
+             nvidia-uvm major (510 here) come from the LOADED DRIVER,
+             not the kernel; they can change with a DRIVER version
+             change. After A2, always re-read them:
+               ls -l /dev/nvidia* | awk '{print $5, $6, $NF}'
+             (the comma-separated major numbers in the ls output) and
+             use THOSE in the two lxc.cgroup2.devices.allow lines in
+             B2 — do not trust the 195/510 values printed in this
+             runbook blindly.
+
+      ADJ-5. B2 PCI address — 01:00.0 (the GTX 950M's slot) can shift
+             if hardware/BIOS changes; after any hardware change:
+               lspci -nn | grep -i nvidia
+             and use the new address in the runbook's lspci commands
+             (T5, gpu-diagnose.sh check [2]).
+
+      Nothing else in the guide is kernel-sensitive. If the kernel did
+      NOT change (likely), proceed to Part A with zero adjustments.
+
 P0.3  Fetch this repo onto the fresh host:
       apt install -y git
       git clone https://github.com/harissaninja/pve2-gpu-setup /root/pve2-gpu-setup
